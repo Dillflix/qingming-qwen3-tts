@@ -14,6 +14,15 @@ if(QINGMING_DEVICE STREQUAL "rx7900xtx-24g")
     set(HIP_CLANG "${ROCM_PATH}/lib/llvm/bin/clang++" CACHE FILEPATH "HIP clang++")
     set(HOST_CXX "${ROCM_PATH}/lib/llvm/bin/clang++" CACHE FILEPATH "Host C++ compiler")
 
+    if(EXISTS "${ROCM_PATH}/lib/libamdhip64.so")
+        set(ROCM_RUNTIME_LIBDIR "${ROCM_PATH}/lib")
+    elseif(EXISTS "${ROCM_PATH}/lib64/libamdhip64.so")
+        set(ROCM_RUNTIME_LIBDIR "${ROCM_PATH}/lib64")
+    else()
+        message(FATAL_ERROR
+            "libamdhip64.so not found under ${ROCM_PATH}/lib or ${ROCM_PATH}/lib64")
+    endif()
+
     if(QINGMING_MODEL_FAMILY STREQUAL "1.7b")
         set(FAMILY_DEFINE "QINGMING_MODEL_FAMILY_1_7B=1")
         set(FAMILY_SOURCE "${CMAKE_SOURCE_DIR}/devices/rx7900xtx-24g/qwen3_tts_1_7b.cpp")
@@ -30,7 +39,8 @@ if(QINGMING_DEVICE STREQUAL "rx7900xtx-24g")
     set(BENCH_BINARY "${CMAKE_BINARY_DIR}/${BENCH_NAME}")
 
     add_custom_command(OUTPUT "${PROD_BINARY}"
-        COMMAND "${HIP_CLANG}" -x hip --offload-arch=gfx1100 "--rocm-path=${ROCM_PATH}" "-D${FAMILY_DEFINE}"
+        COMMAND "${HIP_CLANG}" -x hip --offload-arch=gfx1100 "--rocm-path=${ROCM_PATH}"
+                "-Wl,--enable-new-dtags,-rpath,${ROCM_RUNTIME_LIBDIR}" "-D${FAMILY_DEFINE}"
                 -std=c++20 -O3 -DNDEBUG -pthread -Wall -Wextra -Wpedantic -Wno-unused-function -Wno-unused-result
                 "${CMAKE_SOURCE_DIR}/main.cpp" -o "${PROD_BINARY}"
         DEPENDS "${CMAKE_SOURCE_DIR}/main.cpp" "${CMAKE_SOURCE_DIR}/devices/rx7900xtx-24g/device.h" "${FAMILY_SOURCE}"
