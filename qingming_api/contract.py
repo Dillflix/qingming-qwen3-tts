@@ -122,8 +122,12 @@ class VoiceCatalog:
         return {"object": "list", "data": native + aliases}
 
 
-def split_text(text, minimum=20, maximum=70):
-    """Prefer sentence punctuation, then whitespace, then a Unicode-codepoint cut."""
+def split_text(text, minimum=20, maximum=400):
+    """Keep text within the cap intact; otherwise prefer punctuation, then whitespace.
+
+    This character budget is not the native 512-audio-frame budget. Native EOS
+    validation remains mandatory; duration varies with language and delivery.
+    """
     text = text.strip()
     result = []
     while len(text) > maximum:

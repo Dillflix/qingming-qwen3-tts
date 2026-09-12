@@ -117,10 +117,26 @@ object to replace the alias table. Native names cannot be shadowed.
 `instruct` and OpenAI's `instructions` are accepted as equivalents; conflicting
 values are rejected. Formats: `mp3`, `opus`, `aac`, `flac`, `wav`, `pcm`.
 Speed 0.25–4 is implemented with FFmpeg tempo filtering, not changed sample-rate
-metadata. Long text is cut at punctuation or whitespace, targeting 20–70
-characters per segment; hard cuts keep unbroken text bounded. The final segment
-can be shorter. All segments use the same speaker, language, instruction and
-seed (1234), with 120 ms of silence between segments before speed adjustment.
+metadata. Text up to **400 characters** (after trimming) is passed intact to one
+native generation, including embedded punctuation and newlines. Only longer text
+is split: the existing algorithm chooses the last punctuation boundary within
+the cap, then whitespace, then a Unicode-codepoint cut for unbroken text. Boundary
+search starts at 20 characters; the final remainder can be shorter. This raises
+the previous 70-character cap without changing the splitting algorithm. All
+segments use the same speaker, language, instruction and seed (1234), with 120 ms
+of silence between segments before speed adjustment. Separate generations still
+reset acoustic state; fewer segments do not guarantee consistent prosody.
+
+The native per-segment limit remains **512 audio frames**, approximately 40.96 s
+at 1920 samples/frame and 24 kHz, not 512 text characters. The 400-character cap
+is a starting point for English narration, not a guarantee for every language,
+number-heavy text or slow delivery. Native completion must still report EOS;
+exhaustion fails the request rather than silently accepting incomplete audio.
+Post-generation `speed` adjustment does not increase the native generation budget.
+The 4096-character HTTP input limit and 180-second native segment deadline are
+unchanged. Longer segments may increase time to first playback, especially with
+buffered MP3. Validate narration on the host as described in
+[the deployment guide](DEPLOYMENT.md#validate-longer-segments).
 
 ```python
 from openai import OpenAI

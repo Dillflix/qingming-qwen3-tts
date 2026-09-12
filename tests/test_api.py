@@ -128,14 +128,51 @@ class APITests(unittest.TestCase):
             self.assertEqual(client.get("/readyz", headers=headers).status_code, 503)
 
     def test_chunking_preserves_speaker_style_and_gap(self):
-        text = "This is the first sentence to speak clearly. " * 3
+        text = "This is the first sentence to speak clearly. " * 20
         with self.client() as client:
             response = client.post("/v1/audio/speech", json={"input": text, "response_format": "pcm", "instruct": "Calm."})
             self.assertEqual(response.status_code, 200)
             count = len(split_text(text))
+            self.assertGreater(count, 1)
             self.assertEqual(len(self.worker.calls), count)
-            self.assertTrue(all(len(call[0]) <= 70 and call[3] == "Calm." for call in self.worker.calls))
+            self.assertEqual([call[0] for call in self.worker.calls], split_text(text))
+            self.assertTrue(all(len(call[0]) <= 400 and call[1:] == ("vivian", "Auto", "Calm.") for call in self.worker.calls))
             self.assertEqual(len(response.content), count * len(FLOATS) + (count - 1) * 5760)
+
+    def test_short_multisentence_input_is_one_generation_without_added_gap(self):
+        text = "This is the first sentence to speak clearly.\n" * 3
+        self.assertGreater(len(text), 70)
+        with self.client() as client:
+            response = client.post("/v1/audio/speech", json={"input": text, "response_format": "pcm"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual([call[0] for call in self.worker.calls], [text.strip()])
+            self.assertEqual(response.content, pcm16(FLOATS) * 2)
+
+    def test_segment_cap_and_existing_fallbacks_preserve_text(self):
+        self.assertEqual(split_text("x" * 400), ["x" * 400])
+        self.assertEqual(split_text("x" * 401), ["x" * 400, "x"])
+        self.assertEqual(split_text(" \n\t "), [])
+        sentence = "Read this whole sentence calmly. "
+        text = sentence * 30
+        parts = split_text(text)
+        self.assertTrue(all(part.endswith(".") for part in parts))
+        self.assertEqual(" ".join(parts), text.strip())
+        text = "ordinary words without punctuation " * 30
+        parts = split_text(text)
+        self.assertEqual(" ".join(parts), text.strip())
+        self.assertTrue(all(0 < len(part) <= 400 for part in parts))
+
+    def test_incomplete_nonstreamed_audio_is_not_returned_as_success(self):
+        class IncompleteWorker(FakeWorker):
+            async def generate(self, *args):
+                yield FLOATS
+                raise RuntimeError("Native generation reached its token limit before EOS")
+        app = create_app(self.model, IncompleteWorker())
+        with TestClient(app) as client:
+            response = client.post("/v1/audio/speech", json={"input": "A longer passage. " * 15,
+                                                          "response_format": "pcm"})
+            self.assertEqual(response.status_code, 502)
+            self.assertIn("error", response.json())
 
     def test_checkpoint_type_guard_and_alias_configuration(self):
         catalog = VoiceCatalog(self.model, {"narrator": "RYAN", "invalid": "Sophia"})
@@ -149,10 +186,10 @@ class APITests(unittest.TestCase):
         self.assertEqual(pcm16(struct.pack("<4f", -2, -0.5, 0.5, 2)), struct.pack("<4h", -32768, -16384, 16384, 32767))
         with self.assertRaises(ValueError):
             pcm16(struct.pack("<f", float("nan")))
-        for text in ("你好世界。" * 100, "a" * 141):
+        for text in ("你好世界。" * 100, "a" * 801, "🌤️" * 300):
             parts = split_text(text)
             self.assertEqual("".join(parts), text)
-            self.assertTrue(all(0 < len(p) <= 70 for p in parts))
+            self.assertTrue(all(0 < len(p) <= 400 for p in parts))
         self.assertEqual(tempo_filters(0.25), "atempo=0.5,atempo=0.5")
         self.assertEqual(tempo_filters(4), "atempo=2,atempo=2")
 
@@ -305,6 +342,31 @@ class AsyncTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "misrouted"):
             await anext(worker.generate("Hello", "Ryan", "English", "Calm."))
         worker.close.assert_awaited_once()
+
+    async def test_native_generation_without_eos_fails_closed(self):
+        from unittest.mock import AsyncMock
+        class Input:
+            def write(self, data):
+                self.data = data
+            async def drain(self):
+                pass
+        class Process:
+            returncode = None
+            stdin = Input()
+        worker = NativeWorker("unused", self.model)
+        worker.process = Process()
+        worker.ready = True
+        worker.reader = asyncio.StreamReader()
+        worker.close = AsyncMock()
+        event = json.dumps({"event": "completed", "request_id": 1,
+                            "result": {"status": "ok", "eos": False, "frames": 1}}).encode()
+        worker.reader.feed_data(HEADER.pack(b"QAF1", 1, 1, len(FLOATS), 0) + FLOATS
+                                + HEADER.pack(b"QAF1", 2, 1, len(event), 0) + event)
+        with self.assertRaisesRegex(RuntimeError, "before EOS"):
+            _ = [chunk async for chunk in worker.generate("A longer passage. " * 15, "Ryan", "English", "")]
+        self.assertEqual(json.loads(worker.process.stdin.data)["max_new_tokens"], 512)
+        worker.close.assert_awaited_once()
+        self.assertIsNone(worker.last_result)
 
     async def test_native_eof_timeout_and_abandoned_stream_fail_closed(self):
         from unittest.mock import AsyncMock

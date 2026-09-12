@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One short MP3 check, either direct or through LiteLLM. No service mutations."""
+"""MP3 transport check and listening fixture, direct or through LiteLLM. No service mutations."""
 import argparse
 import getpass
 import json
@@ -14,6 +14,20 @@ import urllib.parse
 import urllib.request
 
 
+FIXTURES = {
+    "smoke": "Welcome to Dillflix, mailboxhead!",
+    "narration": (
+        "Welcome back to Dillflix. Tonight, we are taking a quiet walk through the history of cinema. "
+        "A good story does not need to rush: it gives each character room to breathe, and lets each scene "
+        "lead naturally into the next.\n"
+        "Think of a small theater on a rainy evening, with the lights dimmed and the audience settling "
+        "into their seats. Outside, the city carries on as usual. Inside, a single voice begins the story, "
+        "steady and clear. By the time the final scene arrives, familiar details have taken on new meaning. "
+        "That is the pleasure of watching closely, and of allowing a story to unfold at its own pace."
+    ),
+}
+
+
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     # Never forward a backend/proxy credential to a redirect target.
     def redirect_request(self, req, fp, code, msg, headers, newurl):
@@ -25,6 +39,8 @@ def main():
     parser.add_argument("--base-url", default="http://127.0.0.1:8880/v1")
     parser.add_argument("--model", default="tts-1")
     parser.add_argument("--voice", default="echo", help="echo is the Ryan alias supported by standard voice selectors")
+    parser.add_argument("--fixture", choices=FIXTURES, default="smoke",
+                        help="narration exercises longer segments; listen for completeness and steady delivery")
     parser.add_argument("--api-key-env", default="QINGMING_TEST_API_KEY")
     parser.add_argument("--api-key-file", type=Path)
     parser.add_argument("--ffmpeg", default="ffmpeg")
@@ -40,11 +56,13 @@ def main():
     if not key or any(not 33 <= ord(c) <= 126 for c in key):
         parser.error("A nonempty ASCII API key is required")
     body = json.dumps({"model": args.model, "voice": args.voice,
-                       "input": "Welcome to Dillflix, mailboxhead!", "response_format": "mp3"}).encode()
+                       "input": FIXTURES[args.fixture], "response_format": "mp3"}).encode()
     request = urllib.request.Request(args.base_url.rstrip("/") + "/audio/speech", data=body,
                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})
     output = Path(tempfile.mkdtemp(prefix="benchmark-customvoice-check.", dir=Path.cwd()))
-    report = {"status": "FAIL", "model": args.model, "voice": args.voice}
+    report = {"status": "FAIL", "model": args.model, "voice": args.voice,
+              "fixture": args.fixture, "input_characters": len(FIXTURES[args.fixture]),
+              "scope": "MP3 transport/decoding only; listen for complete text, pace and tone"}
     try:
         started = time.monotonic()
         with urllib.request.build_opener(NoRedirect).open(request, timeout=120) as response:

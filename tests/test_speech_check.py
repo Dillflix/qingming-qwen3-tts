@@ -23,7 +23,7 @@ class SpeechCheckTests(unittest.TestCase):
                                   "-i", "pipe:0", "-f", "mp3", "pipe:1"],
                                  input=FLOATS * 4, capture_output=True, check=True).stdout
 
-    def exercise(self, status):
+    def exercise(self, status, fixture="smoke", voice="echo"):
         calls = []
         payload = self.mp3
         class Handler(BaseHTTPRequestHandler):
@@ -42,7 +42,8 @@ class SpeechCheckTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory() as directory, chdir(directory), redirect_stdout(io.StringIO()) as output:
                 with patch("sys.argv", ["check_speech", "--base-url", f"http://127.0.0.1:{server.server_port}/v1",
-                                       "--model", "qingming-tts", "--ffmpeg", self.ffmpeg]), \
+                                       "--model", "qingming-tts", "--ffmpeg", self.ffmpeg,
+                                       "--fixture", fixture, "--voice", voice]), \
                      patch.dict("os.environ", {"QINGMING_TEST_API_KEY": "private-test-token"}):
                     code = check_speech.main()
                 report_path, = Path(directory).glob("benchmark-customvoice-check.*/report.json")
@@ -57,7 +58,10 @@ class SpeechCheckTests(unittest.TestCase):
         self.assertEqual(calls[0][0], "/v1/audio/speech")
         self.assertEqual(calls[0][1], "Bearer private-test-token")
         self.assertEqual(calls[0][2]["model"], "qingming-tts")
-        self.assertEqual(calls[0][2]["voice"], "echo")
+        self.assertEqual(calls[0][2]["voice"], voice)
+        self.assertEqual(calls[0][2]["input"], check_speech.FIXTURES[fixture])
+        self.assertEqual(report["fixture"], fixture)
+        self.assertEqual(report["input_characters"], len(check_speech.FIXTURES[fixture]))
         return code, report
 
     def test_mp3_check_on_real_http_transport(self):
@@ -70,6 +74,17 @@ class SpeechCheckTests(unittest.TestCase):
         code, report = self.exercise(401)
         self.assertEqual(code, 1)
         self.assertIn("HTTP 401", report["error"])
+
+    def test_narration_fixture_is_one_http_request_with_native_voice(self):
+        from qingming_api.contract import split_text
+        code, report = self.exercise(200, fixture="narration", voice="Aiden")
+        self.assertEqual(code, 0)
+        self.assertIn("listen", report["scope"])
+        text = check_speech.FIXTURES["narration"]
+        self.assertGreater(len(text), 400)
+        self.assertLessEqual(len(text), 4096)
+        self.assertEqual(len(split_text(text)), 2)
+        self.assertGreater(len(split_text(text, maximum=70)), 2)
 
     def test_redirects_do_not_receive_credentials(self):
         code, report = self.exercise(302)

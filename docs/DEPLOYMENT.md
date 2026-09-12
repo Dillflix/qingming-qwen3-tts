@@ -186,16 +186,22 @@ In **Admin Panel → Settings → Audio → Text-to-Speech**:
 | API Base URL | Your **LiteLLM** base URL, ending in `/v1` |
 | API Key | LiteLLM key authorized for `qingming-tts` |
 | Model | `qingming-tts` |
-| Voice | `echo` (maps to Ryan); `alloy` maps to Vivian |
+| Voice | `Aiden` (native preset name; no alias needed) |
 | OpenAI Params | `{"response_format":"mp3"}` |
-| Response splitting | Punctuation |
+| Response splitting | Paragraphs |
 
 Keep MP3 for browser playback; do not set `stream: true` or raw PCM for this path.
 The API's tested true PCM streaming remains available to purpose-built clients.
-Open WebUI can start playback sentence-by-sentence; this is not the same as its
-receiving the native stream. Native speaker names such as `Ryan` work at our
-endpoint; `echo` avoids voice-selector compatibility issues across proxy/UI
-versions. Other hardcoded OpenAI voices (`nova`, `fable`, etc.) are not implicitly
+Open WebUI's Punctuation setting fragments text into separate HTTP requests;
+the backend cannot recombine them. Use **Paragraphs** so more context reaches
+each request, then let the adapter apply its 400-character cap. This is not
+native PCM streaming, and larger MP3 requests can delay first playback. Avoid
+None for arbitrary long responses: the HTTP input limit is still 4096 characters
+per request (including a single oversized paragraph).
+
+Native speaker names such as `Aiden` and `Ryan` work directly at our endpoint;
+`echo` remains a compatibility alias for Ryan, and `alloy` maps to Vivian.
+Other hardcoded OpenAI voices (`nova`, `fable`, etc.) are not implicitly
 mapped to nonexistent checkpoint speakers. Per-model/user voice overrides in
 Open WebUI can override the system default: update those too if applicable.
 
@@ -206,14 +212,14 @@ AUDIO_TTS_ENGINE=openai
 AUDIO_TTS_OPENAI_API_BASE_URL=http://<LiteLLM-host>:4000/v1
 AUDIO_TTS_OPENAI_API_KEY=<LiteLLM client key>
 AUDIO_TTS_MODEL=qingming-tts
-AUDIO_TTS_VOICE=echo
+AUDIO_TTS_VOICE=Aiden
 AUDIO_TTS_OPENAI_PARAMS={"response_format":"mp3"}
-AUDIO_TTS_SPLIT_ON=punctuation
 ```
 
 As described in the [Open WebUI environment reference](https://docs.openwebui.com/reference/env-configuration/),
 existing persisted admin settings can take precedence over environment defaults;
-check the saved Audio panel. Don't change the chat model name or chat provider
+set **Response splitting → Paragraphs** in the saved Audio panel after initial
+configuration. Don't change the chat model name or chat provider
 hint. Test the speaker button on a short answer first, then a multi-sentence
 answer and cancellation followed by another request.
 
@@ -223,3 +229,39 @@ plain MP3 first, then test style forwarding explicitly rather than silently
 claiming it works. The guide is based on [Open WebUI's TTS integration and
 response splitting docs](https://docs.openwebui.com/features/chat-conversations/audio/text-to-speech/openai-tts-integration/).
 The user's installed proxy/UI versions have not been exercised locally.
+
+## Validate longer segments
+
+The segmentation update is Python-only: no HIP rebuild, model conversion, unit
+reinstallation or dependency update is needed. Once the update is published,
+pull it and restart **only TTS**, during a quiet window (active speech will be
+interrupted):
+
+```bash
+(
+set -Eeuo pipefail
+cd /home/jdillman/qingming-qwen3-tts
+git pull --ff-only
+sudo systemctl restart qingming-tts.service
+sudo journalctl -u qingming-tts.service -n 30 --no-pager
+)
+```
+
+Wait for the new `CustomVoice worker ready` journal entry, then run the fixed
+multi-sentence narration through LiteLLM. Enter the **LiteLLM client key**:
+
+```bash
+cd /home/jdillman/qingming-qwen3-tts
+.venv/bin/python scripts/check_speech.py \
+  --base-url http://192.168.0.54:4000/v1 \
+  --model qingming-tts --voice Aiden --fixture narration
+```
+
+The checker sends one HTTP request and saves `speech.mp3` and `report.json` under
+the printed results directory. The fixture needs two native segments at the
+400-character cap. A transport PASS only means a decodable MP3 was returned;
+listen for all the text, especially the final words "at its own pace", steady
+pace/tone, and the segment join. This does not test Open WebUI's own splitting:
+also try a new multi-sentence answer there with Paragraphs selected. A live
+RX 7900 XT listening check is still required; local fake-worker tests cannot
+qualify prosody, language-specific duration or native stability.
