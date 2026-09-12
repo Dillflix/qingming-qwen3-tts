@@ -20754,6 +20754,8 @@ struct StreamingPipelineResult{
     int chunk_count=0,first_chunk_frames=0,chunk_frames=STREAM_CHUNK_FRAMES;
 };
 
+using AudioChunkCallback=std::function<void(const float*,std::size_t)>;
+
 class StreamingCodecPipeline{
 public:
     using StreamClock=
@@ -20779,14 +20781,16 @@ public:
         StreamTime e2e_start,
         int chunk_frames=STREAM_CHUNK_FRAMES,
         hipStream_t resident_decoder_stream=nullptr,
-        StreamingCodecDecoder* resident_decoder=nullptr)
+        StreamingCodecDecoder* resident_decoder=nullptr,
+        AudioChunkCallback audio_chunk_callback={})
       :future_(std::move(f)),
        preload_start_(preload_start),
        maximum_frames_(maximum_frames),
        e2e_start_(e2e_start),
        chunk_frames_(chunk_frames),
        resident_decoder_stream_(resident_decoder_stream),
-       resident_decoder_(resident_decoder){
+       resident_decoder_(resident_decoder),
+       audio_chunk_callback_(std::move(audio_chunk_callback)){
         worker_=std::thread([this](){worker_main();});
     }
     ~StreamingCodecPipeline(){if(worker_.joinable()){{
@@ -20828,6 +20832,7 @@ private:
                     if(pending.size()<static_cast<std::size_t>(target_frames)*NQ&&!closed_)continue;
                 }
                 if(pending.empty())continue;auto ds=StreamClock::now();auto wave=decoder->append(pending);
+                if(audio_chunk_callback_&&!wave.empty()) audio_chunk_callback_(wave.data(),wave.size());
                 result_.decoder_compute_ms+=stream_elapsed_ms(ds,StreamClock::now());++result_.chunk_count;
                 result_.waveform.insert(result_.waveform.end(),wave.begin(),wave.end());
                 if(!first){
@@ -20846,6 +20851,7 @@ private:
     }
     std::future<PreloadResult>future_;StreamTime preload_start_{};int maximum_frames_=0;StreamTime e2e_start_{};
     int chunk_frames_=0;hipStream_t resident_decoder_stream_=nullptr;StreamingCodecDecoder* resident_decoder_=nullptr;
+    AudioChunkCallback audio_chunk_callback_;
     std::mutex mutex_;std::condition_variable condition_;
     std::deque<std::array<std::int32_t,NQ>>queue_;bool closed_=false;std::thread worker_;
     std::exception_ptr error_;StreamingPipelineResult result_;
@@ -26312,7 +26318,8 @@ public:
 
     void generate(
         const ResidentRequest& request,
-        std::size_t request_index) {
+        std::size_t request_index,
+        codec_decoder::AudioChunkCallback audio_chunk_callback={}) {
 
         resident_benchmark_heartbeat(request_index,"begin");
 
@@ -26471,7 +26478,8 @@ public:
                     static_cast<int>(
                         maximum_frames_),
                  e2e_start,
-                 request_index](){
+                 request_index,
+                 audio_chunk_callback](){
 
                     resident_benchmark_heartbeat(
                         request_index,
@@ -26508,7 +26516,8 @@ public:
                                     codec_decoder::
                                         STREAM_CHUNK_FRAMES,
                                     decoder_stream_,
-                                    resident_codec_decoder_.get());
+                                    resident_codec_decoder_.get(),
+                                    audio_chunk_callback);
                 };
 
         const std::function<

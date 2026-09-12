@@ -4,6 +4,8 @@
 #include "devices/rx7900xtx-24g/qwen3_tts_1_7b.cpp"
 #undef main
 
+#include "native/audio_protocol.h"
+
 namespace qingming::production {
 
 struct CapturedIo {
@@ -477,8 +479,8 @@ static void print_resident_result(
         <<"\"decoder_ms\":"<<(decoder?*decoder:-1.0)<<","
         <<"\"e2e_ms\":"<<(e2e?*e2e:-1.0)<<","
         <<"\"realtime_x\":"<<(realtime?*realtime:-1.0)<<","
-        <<"\"generation_wgp\":28,"
-        <<"\"decoder_wgp\":20,"
+        <<"\"generation_wgp\":"<<(qwen3_tts::baseline::g_resident_cu_partition_enabled?28:0)<<","
+        <<"\"decoder_wgp\":"<<(qwen3_tts::baseline::g_resident_cu_partition_enabled?20:0)<<","
         <<"\"output\":\""
         <<json_escape(
             fs::absolute(
@@ -606,6 +608,8 @@ static int run_once(
     return rc;
 }
 
+#include "native/customvoice_resident.h"
+
 static int run_resident(
     int argc,
     char** argv) {
@@ -614,6 +618,9 @@ static int run_resident(
     std::string task;
     std::string text_mode;
     std::size_t maximum_frames=0;
+    std::string protocol;
+    std::string cu_partition="xtx";
+    int audio_fd=-1;
 
     for(int i=1;i<argc;++i){
         const std::string arg=argv[i];
@@ -666,6 +673,15 @@ static int run_resident(
             std::size_t capacity=256;
             while(capacity<value)capacity<<=1;
             maximum_frames=capacity;
+        }else if(arg=="--protocol"){
+            protocol=require_value("--protocol");
+        }else if(arg=="--audio-fd"){
+            const auto value=require_value("--audio-fd");
+            std::size_t used=0;
+            audio_fd=std::stoi(value,&used);
+            if(used!=value.size()) throw std::runtime_error("invalid --audio-fd");
+        }else if(arg=="--resident-cu-partition"){
+            cu_partition=require_value("--resident-cu-partition");
         }else if(
             arg=="--help"
             ||arg=="-h"
@@ -679,6 +695,8 @@ static int run_resident(
                 <<"\n"
                 <<"Input: one JSON request per line.\n"
                 <<"Shutdown: {\"command\":\"shutdown\"}\n";
+            std::cout<<"CustomVoice IPC: --protocol jsonl-v1 --audio-fd FD\n"
+                <<"Resident streams: --resident-cu-partition xtx|none (default xtx)\n";
             return 0;
         }else{
             throw std::runtime_error(
@@ -711,7 +729,22 @@ static int run_resident(
             "--model-dir is required");
     }
 
-    // RX7900XTX-24G resident execution partition.
+    if(cu_partition!="xtx" && cu_partition!="none")
+        throw std::runtime_error("--resident-cu-partition must be xtx or none");
+    if((!protocol.empty() && protocol!="jsonl-v1") || (protocol.empty() && audio_fd!=-1))
+        throw std::runtime_error("--audio-fd requires --protocol jsonl-v1");
+    std::unique_ptr<qingming::audio_protocol::Writer> audio;
+    if(protocol=="jsonl-v1"){
+        if(task!="custom-voice") throw std::runtime_error("jsonl-v1 supports CustomVoice only");
+        int selected=0;
+        hipDeviceProp_t properties{};
+        if(hipGetDevice(&selected)!=hipSuccess || hipGetDeviceProperties(&properties,selected)!=hipSuccess ||
+           std::string(properties.gcnArchName).rfind("gfx1100",0)!=0)
+            throw std::runtime_error("this CustomVoice worker requires the selected gfx1100 GPU");
+        audio=std::make_unique<qingming::audio_protocol::Writer>(audio_fd);
+    }
+
+    // Preserve the existing XTX policy unless shared streams are explicitly selected.
     qwen3_tts::baseline::
         g_resident_generation_wgps=28;
 
@@ -719,7 +752,7 @@ static int run_resident(
         g_resident_decoder_wgps=20;
 
     qwen3_tts::baseline::
-        g_resident_cu_partition_enabled=true;
+        g_resident_cu_partition_enabled=cu_partition=="xtx";
 
     std::unique_ptr<
         qwen3_tts::baseline::ResidentEngine>
@@ -745,6 +778,8 @@ static int run_resident(
 
         capture.end();
     }
+
+    if(audio) return run_customvoice_jsonl(*engine,*audio,maximum_frames,cu_partition);
 
     std::cout
         <<"> "

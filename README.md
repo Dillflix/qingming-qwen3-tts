@@ -370,6 +370,11 @@ Model files are downloaded separately and are not bundled in the source archive.
 
 ## 6. Build and Run
 
+The fork's initial CustomVoice-only HTTP adapter, RX 7900 XT resident-stream
+selection, and host validation commands are documented in
+[CustomVoice API](docs/CUSTOMVOICE-API.md). Native GPU integration validation is
+required before deployment; the original CLI examples below remain available.
+
 ### 6.1 AMD RX 7900 XTX 24GB
 
 Build 0.6B:

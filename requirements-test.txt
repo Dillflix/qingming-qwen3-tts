@@ -1,0 +1,4 @@
+-r requirements-api.txt
+httpx>=0.27,<1
+openai>=1.66,<4
+imageio-ffmpeg>=0.6,<1
