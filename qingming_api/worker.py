@@ -30,10 +30,17 @@ class NativeWorker:
         self.last_result = None
         self.counter = 0
         self.tasks = []
+        self._closing = False
 
     async def start(self):
         if os.name != "posix":
             raise RuntimeError("The native ROCm worker requires Linux")
+        if self.process is not None and self.process.returncode is None:
+            raise RuntimeError("Close the previous native process before starting a replacement")
+        self._closing = False
+        self.ready = False
+        self.error = None
+        self.info = {}
         read_fd, write_fd = os.pipe()
         env = os.environ.copy()
         if self.hip_device is not None:
@@ -59,7 +66,7 @@ class NativeWorker:
                 raise RuntimeError(f"Native startup did not report the required CustomVoice protocol: {self.info}")
             self.ready = True
             self.tasks.append(asyncio.create_task(self._drain(self.process.stdout, "stdout")))
-            self.tasks.append(asyncio.create_task(self._watch()))
+            self.tasks.append(asyncio.create_task(self._watch(self.process)))
             LOG.info("CustomVoice worker ready: %s", self.info)
         except BaseException:
             await self.close()
@@ -73,11 +80,16 @@ class NativeWorker:
         while line := await stream.readline():
             LOG.info("native %s: %s", label, line.decode("utf-8", "replace").rstrip())
 
-    async def _watch(self):
-        rc = await self.process.wait()
+    async def _watch(self, process):
+        rc = await process.wait()
+        if process is not self.process:
+            return
         self.ready = False
-        self.error = f"Native worker exited with status {rc}; restart the API after inspecting its log"
-        LOG.error(self.error)
+        if self._closing:
+            LOG.info("Owned native worker stopped (status %s)", rc)
+        else:
+            self.error = f"Native worker exited unexpectedly with status {rc}"
+            LOG.error(self.error)
 
     async def generate(self, text, speaker, language, instruct, *, seed=1234, retain_dir=None):
         """Caller holds the single-worker lock through the whole HTTP response."""
@@ -138,12 +150,13 @@ class NativeWorker:
                     raise RuntimeError("Unknown native audio frame kind")
         finally:
             if not complete:
-                self.error = "Generation failed or was interrupted; restart the API worker"
+                self.error = "Generation failed or was interrupted; native state discarded"
                 await self.close()
             if temporary is not None:
                 temporary.cleanup()
 
     async def close(self):
+        self._closing = True
         self.ready = False
         if self.process and self.process.returncode is None:
             with suppress(ProcessLookupError):

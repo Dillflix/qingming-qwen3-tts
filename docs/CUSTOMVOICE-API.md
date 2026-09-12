@@ -1,4 +1,4 @@
-# CustomVoice API (initial implementation; GPU integration validation required)
+# CustomVoice API
 
 This adapter serves only `Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice`. It uses one
 persistent Qingming HIP process on gfx1100, with requests and text segments
@@ -11,6 +11,11 @@ embeddings, or accepts a `ref_audio` field. `clone:` voices produce the explicit
 The user-supplied `benchmark-customvoice.gojZSW` archive was produced with commit
 `5736b1d` and ROCm 10 on the user's RX 7900 XT. All three samples reached natural
 EOS. The user confirmed that calm and cheerful delivery sounded as expected.
+
+Subsequent native resident, HTTP MP3, and SDK PCM/MP3 checks passed on the RX 7900 XT
+(HTTP testing was initially loopback without authentication).
+See [deployment and LiteLLM/Open WebUI integration](DEPLOYMENT.md)
+for the current evidence, service installation, and remaining host checks.
 
 | Sample | Audio duration | Native TTFA | Native total |
 |---|---:|---:|---:|
@@ -80,8 +85,9 @@ workers against this single-GPU configuration.
 For LAN access, set `QINGMING_API_KEY` (preferred over a command-line secret),
 then use `--host 0.0.0.0`. Non-loopback binding requires a key. Clients send
 `Authorization: Bearer ...`; do not put real keys in verbose curl logs. Use a
-TLS reverse proxy for untrusted networks. This initial version is not an
-endurance-qualified production deployment.
+TLS reverse proxy for untrusted networks. `--api-key-file` or
+`QINGMING_API_KEY_FILE` is also supported. The systemd installer uses a protected
+credential file. This version is not endurance-qualified.
 
 ## API
 
@@ -148,8 +154,9 @@ Input validation errors use OpenAI-shaped JSON. The adapter checks for real audi
 before returning streaming headers. An error after headers aborts the stream; it
 cannot retroactively replace HTTP 200 with JSON. A disconnected/interrupted
 generation terminates only the owned native worker and sets readiness false,
-preventing reuse of partially updated state. Inspect logs and restart the API;
-automatic recovery and request replay are not implemented in this first version.
+preventing reuse of partially updated state. The supervisor waits for cleanup,
+then replaces that worker with bounded backoff. Queued requests recheck readiness.
+Requests are never automatically replayed. See [recovery behavior](DEPLOYMENT.md#recovery-behavior).
 
 ## Native protocol
 

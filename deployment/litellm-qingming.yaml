@@ -1,0 +1,12 @@
+# Merge this entry into the existing model_list; do not replace your chat config.
+# Set BOTH variables in the LiteLLM process/container, not just your login shell.
+# QINGMING_API_BASE=http://<TTS-host-or-container>:8880/v1
+# QINGMING_API_KEY=<same backend key configured for qingming-tts.service>
+model_list:
+  - model_name: qingming-tts
+    litellm_params:
+      model: openai/tts-1
+      api_base: os.environ/QINGMING_API_BASE
+      api_key: os.environ/QINGMING_API_KEY
+    model_info:
+      mode: audio_speech

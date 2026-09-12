@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from .audio import MEDIA_TYPES, encode
 from .contract import APIError, CLONE_ERROR, SpeechRequest, VoiceCatalog, split_text
+from .supervisor import WorkerSupervisor
 
 LOG = logging.getLogger("qingming.api")
 MAX_BODY = 65536
@@ -31,28 +32,26 @@ class OwnedStream(StreamingResponse):
             await asyncio.shield(self.cleanup())
 
 
-def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg", queue_timeout=30):
+def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg", queue_timeout=30,
+               supervisor_options=None):
     catalog = VoiceCatalog(Path(model_dir), aliases)
     lock = asyncio.Lock()
     waiting = 0
 
-    async def start_worker():
-        try:
-            await worker.start()
-        except Exception as error:
-            worker.error = str(error)
-            LOG.exception("Native worker failed to start")
+    supervisor = WorkerSupervisor(worker, lock, **(supervisor_options or {}))
 
     @asynccontextmanager
     async def lifespan(app):
-        startup = asyncio.create_task(start_worker())
-        yield
-        startup.cancel()
-        await asyncio.gather(startup, return_exceptions=True)
-        await worker.close()
+        task = asyncio.create_task(supervisor.run())
+        try:
+            yield
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     app = FastAPI(title="Qingming CustomVoice", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.worker = worker
+    app.state.supervisor = supervisor
 
     @app.exception_handler(APIError)
     async def api_error_handler(request, error):
@@ -117,7 +116,12 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
                 raise APIError("Timed out waiting for the speech worker", code="queue_timeout", status=429) from error
         finally:
             waiting -= 1
+        # A queued request may have arrived before its predecessor killed the worker.
+        if not worker.ready:
+            lock.release()
+            raise APIError("CustomVoice worker is recovering", code="engine_not_ready", status=503)
         released = False
+        cleanup_task = None
 
         async def native_chunks():
             for index, text in enumerate(split_text(value.input)):
@@ -135,7 +139,7 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
         target_format = "pcm" if value.response_format == "wav" else value.response_format
         encoded = encode(native_chunks(), target_format, value.speed, ffmpeg)
 
-        async def cleanup():
+        async def finish_cleanup():
             nonlocal released
             try:
                 await encoded.aclose()
@@ -143,6 +147,15 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
                 if not released:
                     lock.release()
                     released = True
+
+        async def cleanup():
+            nonlocal cleanup_task
+            # Stream finalization and ASGI disconnect may both reach here. Keep
+            # cleanup alive through cancellation and never close a generator twice
+            # concurrently or release its lock before the process has been reaped.
+            if cleanup_task is None:
+                cleanup_task = asyncio.create_task(finish_cleanup())
+            await asyncio.shield(cleanup_task)
 
         try:
             # Verify there is real audio before sending HTTP 200/stream headers.
