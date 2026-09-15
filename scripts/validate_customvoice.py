@@ -17,7 +17,7 @@ import time
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from qingming_api.contract import VoiceCatalog
-from qingming_api.worker import NativeWorker
+from qingming_api.worker import GenerationLimitError, NativeWorker
 
 TEXT = "Welcome to Dillflix, mailboxhead!"
 CALM = "Speak in a calm and confident tone."
@@ -111,12 +111,74 @@ async def validate(args, out, report):
         await worker.close()
 
 
+async def validate_limit_recovery(args, out, report):
+    """Short forced-limit gate in one real worker; no production config changes."""
+    VoiceCatalog(args.model_dir)
+    report["binary_sha256"] = sha256(args.binary)
+    report["model_config_sha256"] = sha256(args.model_dir / "config.json")
+    report["cases"] = {}
+    worker = NativeWorker(args.binary, args.model_dir, hip_device=args.hip_device)
+    try:
+        print("Starting dedicated limit-recovery worker (512-frame capacity)", flush=True)
+        await worker.start()
+        process = worker.process
+        report["resident_ready"] = worker.info
+        report["worker_pid"] = process.pid
+
+        def require_same_worker():
+            if worker.process is not process or not worker.ready or process.returncode is not None:
+                raise RuntimeError("The native worker was stopped, replaced, or became unavailable")
+
+        async def control(label):
+            print(f"Starting {label}", flush=True)
+            chunks = [chunk async for chunk in worker.generate(TEXT, "Ryan", "English", CALM, retain_dir=out)]
+            require_same_worker()
+            raw = b"".join(chunks)
+            output = Path(worker.last_result["output"])
+            if not raw or wav_payload(output) != raw:
+                raise RuntimeError(f"{label}: native stream/WAV mismatch")
+            report["cases"][label] = {"sha256": sha256(output), "native": worker.last_result}
+            return raw
+
+        baseline = await control("before-limit")
+        if args.expected_calm_sha256 and report["cases"]["before-limit"]["sha256"] != args.expected_calm_sha256:
+            raise RuntimeError("Pre-limit control differs from the supplied baseline hash")
+        print("Forcing an 8-frame request limit; a GenerationLimitError is expected", flush=True)
+        worker.max_new_tokens = 8  # Request budget only; resident capacity stays 512.
+        chunks = []
+        try:
+            async for chunk in worker.generate(TEXT, "Ryan", "English", CALM, retain_dir=out):
+                chunks.append(chunk)
+        except GenerationLimitError as error:
+            require_same_worker()
+            raw = b"".join(chunks)
+            output = out / f"{error.request_id}.wav"
+            if error.frames != 8 or len(raw) != 8 * 1920 * 4 or wav_payload(output) != raw:
+                raise RuntimeError("Forced-limit audio length/WAV mismatch")
+            report["cases"]["forced-limit"] = {"status": "EXPECTED_LIMIT", "frames": error.frames,
+                                                 "worker_retained": True, "sha256": sha256(output)}
+        else:
+            raise RuntimeError("The fixture reached EOS within 8 frames; the limit path was not exercised")
+        finally:
+            worker.max_new_tokens = 512
+        for index in range(1, 6):
+            if await control(f"after-limit-{index}") != baseline:
+                raise RuntimeError(f"Post-limit control {index} differs from the pre-limit PCM")
+        report["status"] = "PASS"
+        report["scope"] = ("One forced 8-frame limit at 512-frame capacity; five identical natural-EOS controls "
+                           "in the same HIP process. Not an HTTP/proxy, full-512-frame exhaustion, or endurance test.")
+    finally:
+        await worker.close()
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, default=ROOT / "build/rx7900xtx-24g-1.7b/qingming-qwen3-tts_rx7900xtx-24g_1.7b")
     parser.add_argument("--model-dir", type=Path, default=ROOT / "models/Qwen3-TTS-12Hz-1.7B-CustomVoice")
     parser.add_argument("--hip-device", type=int)
     parser.add_argument("--expected-calm-sha256")
+    parser.add_argument("--limit-recovery-only", action="store_true",
+                        help="Run a short native before/forced-limit/five-after test instead of the full baseline suite")
     args = parser.parse_args()
     args.binary = args.binary.resolve()
     args.model_dir = args.model_dir.resolve()
@@ -125,7 +187,8 @@ def main():
     logging.basicConfig(level=logging.INFO, handlers=[logging.FileHandler(out / "resident.log", encoding="utf-8")])
     report = {"status": "FAIL", "errors": []}
     try:
-        asyncio.run(validate(args, out, report))
+        check = validate_limit_recovery if args.limit_recovery_only else validate
+        asyncio.run(check(args, out, report))
     except BaseException as error:
         report["errors"].append(f"{type(error).__name__}: {error}")
         print(f"ERROR: {error}", file=sys.stderr, flush=True)

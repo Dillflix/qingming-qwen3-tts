@@ -83,6 +83,38 @@ inspect the unit journal and AVC records first.
 
 ## Recovery behavior
 
+Clean audio-budget exhaustion is a **request failure, not a worker outage**.
+The adapter returns buffered callers HTTP 422 (`speech_generation_limit`) and
+keeps the worker resident after validating the complete native terminal frame and
+audio length. It does not replay the failed text or silently return truncated
+audio. Queued requests can run immediately after response cleanup. Actual native
+failures and incomplete protocol exchanges still follow the restart policy below.
+
+This reliability update is Python-only: no HIP rebuild, dependency change, new
+generation limit, or systemd unit reinstall. Local tests exercise the real parser,
+MP3/WAV/PCM handling, one failed request followed by five queued successes, retained
+readiness, malformed completions, and aborted streaming bodies. They do not prove
+GPU state reuse on the host.
+
+For a short native reuse check, run the following during a quiet window, with the
+production TTS worker stopped to avoid loading a second copy beside it. The script
+does not control services; it starts and closes only its own native process:
+
+```bash
+cd /home/jdillman/qingming-qwen3-tts
+.venv/bin/python scripts/validate_customvoice.py --limit-recovery-only
+```
+
+It obtains a short baseline, forces an **8-frame request** inside the existing
+512-frame resident capacity, verifies the expected length error without a process
+replacement, then checks five natural-EOS controls against the baseline PCM.
+The forced-limit WAV is deliberately incomplete diagnostic evidence, not a valid
+speech response. The report and audio/logs are archived even on failure. This is
+not full-512-frame exhaustion, HTTP/LiteLLM, or endurance qualification. Restore
+the previously running TTS service after testing; inspect any failure before
+considering the update qualified. Use the same `--hip-device` selection as your
+working service if it has an explicit override.
+
 - One HTTP worker and one owned native process; requests/segments are serialized.
 - EOF, native error, timeout, or interrupted PCM generation discards native state.
   A supervisor reaps the old worker, waits for request/encoder cleanup, and starts

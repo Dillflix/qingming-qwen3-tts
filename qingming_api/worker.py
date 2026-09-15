@@ -13,6 +13,15 @@ HEADER = struct.Struct("<4sIQII")
 MAX_PAYLOAD = 1024 * 1024
 
 
+class GenerationLimitError(RuntimeError):
+    """Validated terminal completion, but no natural EOS; the worker is reusable."""
+
+    def __init__(self, request_id, frames):
+        super().__init__("Native generation reached its token limit before EOS")
+        self.request_id = request_id
+        self.frames = frames
+
+
 class NativeWorker:
     def __init__(self, binary, model_dir, *, hip_device=None, max_new_tokens=512,
                  startup_timeout=300, request_timeout=180):
@@ -97,7 +106,7 @@ class NativeWorker:
             raise RuntimeError(self.error or "Native worker is not ready")
         self.counter += 1
         request_id = self.counter
-        complete = False
+        terminal_validated = False
         temporary = None
         if retain_dir is None:
             temporary = tempfile.TemporaryDirectory(prefix="qingming-audio-")
@@ -134,22 +143,40 @@ class NativeWorker:
                     yield payload
                 elif kind in (2, 3):
                     event = json.loads(payload)
-                    if event.get("request_id") != request_id:
+                    if type(event.get("request_id")) is not int or event["request_id"] != request_id:
                         raise RuntimeError("Native completion has the wrong request ID")
                     if kind == 3:
                         raise RuntimeError(event.get("error", "Native generation failed"))
                     result = event.get("result", {})
-                    if event.get("event") != "completed" or result.get("status") != "ok" or not result.get("eos"):
-                        raise RuntimeError("Native generation failed or reached its token limit before EOS")
-                    if samples == 0 or samples != result.get("frames", -1) * 1920:
+                    if event.get("event") != "completed" or result.get("status") != "ok":
+                        raise RuntimeError("Native generation failed")
+                    frames = result.get("frames")
+                    if (type(frames) is not int or not 0 < frames <= self.max_new_tokens
+                            or samples != frames * 1920):
                         raise RuntimeError("Native audio length disagrees with its codec frame count")
+                    if result.get("eos") is not True:
+                        # A done frame is sent only after generate() and decoder
+                        # finalization return normally. The resident loop resets
+                        # request state before its next generation. Reuse only a
+                        # fully drained, self-consistent budget exhaustion, never
+                        # an arbitrary missing EOS, error frame, or broken pipe.
+                        if (result.get("eos") is False and frames == self.max_new_tokens
+                                and type(result.get("max_new_tokens")) is int
+                                and result["max_new_tokens"] == self.max_new_tokens
+                                and type(result.get("eos_frame")) is int
+                                and result["eos_frame"] == -1):
+                            terminal_validated = True
+                            LOG.warning("Native request %s reached %s audio frames before EOS; "
+                                        "completion validated, worker retained (no retry)", request_id, frames)
+                            raise GenerationLimitError(request_id, frames)
+                        raise RuntimeError("Native generation stopped before EOS without a valid budget completion")
                     self.last_result = result
-                    complete = True
+                    terminal_validated = True
                     return
                 else:
                     raise RuntimeError("Unknown native audio frame kind")
         finally:
-            if not complete:
+            if not terminal_validated:
                 self.error = "Generation failed or was interrupted; native state discarded"
                 await self.close()
             if temporary is not None:

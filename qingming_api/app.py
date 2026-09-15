@@ -10,14 +10,38 @@ import wave
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
+from starlette.datastructures import Headers
 
 from .audio import MEDIA_TYPES, encode
 from .contract import APIError, CLONE_ERROR, SpeechRequest, VoiceCatalog, split_text
 from .supervisor import WorkerSupervisor
+from .worker import GenerationLimitError
 
 LOG = logging.getLogger("qingming.api")
 MAX_BODY = 65536
 MAX_AUDIO_BYTES = 128 * 1024 * 1024
+
+
+class APIKeyMiddleware:
+    """Authenticate without wrapping/re-emitting the response stream.
+
+    BaseHTTPMiddleware can emit a normal end-of-body before propagating a late
+    streaming exception. Preserve the original ASGI failure boundary instead.
+    """
+
+    def __init__(self, app, api_key):
+        self.app = app
+        self.api_key = api_key
+
+    async def __call__(self, scope, receive, send):
+        # Liveness is public and contains no model, prompt or credential details.
+        if scope["type"] == "http" and self.api_key and scope["path"] != "/healthz":
+            supplied = Headers(scope=scope).get("authorization", "")
+            if not hmac.compare_digest(supplied.encode(), ("Bearer " + self.api_key).encode()):
+                error = APIError("Invalid API key", code="invalid_api_key", status=401)
+                await JSONResponse(error.body, status_code=401)(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 class OwnedStream(StreamingResponse):
@@ -57,15 +81,7 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
     async def api_error_handler(request, error):
         return JSONResponse(error.body, status_code=error.status)
 
-    @app.middleware("http")
-    async def authenticate(request, call_next):
-        # Liveness is public and contains no model, prompt or credential details.
-        if api_key and request.url.path != "/healthz":
-            supplied = request.headers.get("authorization", "")
-            if not hmac.compare_digest(supplied.encode(), ("Bearer " + api_key).encode()):
-                error = APIError("Invalid API key", code="invalid_api_key", status=401)
-                return JSONResponse(error.body, status_code=401)
-        return await call_next(request)
+    app.add_middleware(APIKeyMiddleware, api_key=api_key)
 
     @app.get("/healthz")
     async def health():
@@ -189,6 +205,16 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
                     wav.writeframes(content)
                 content = output.getvalue()
             return Response(bytes(content), media_type=MEDIA_TYPES[value.response_format], headers={"Cache-Control": "no-store"})
+        except GenerationLimitError as error:
+            # No native crash: return a request-specific, non-5xx failure so
+            # ordinary proxy retries/cooldowns do not punish healthy followers.
+            # A true PCM stream may already have sent headers; that path aborts
+            # its body instead, while still releasing the lock and retaining
+            # the worker after the validated terminal frame.
+            await cleanup()
+            raise APIError("Speech did not finish within the per-segment audio budget. "
+                           "Shorten or split the input; no complete audio was returned and no retry was made.",
+                           param="input", code="speech_generation_limit", status=422) from error
         except Exception as error:
             LOG.exception("Speech generation failed")
             await cleanup()

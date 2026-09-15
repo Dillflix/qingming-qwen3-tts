@@ -133,6 +133,22 @@ is a starting point for English narration, not a guarantee for every language,
 number-heavy text or slow delivery. Native completion must still report EOS;
 exhaustion fails the request rather than silently accepting incomplete audio.
 Post-generation `speed` adjustment does not increase the native generation budget.
+For buffered formats (including default MP3), a validated budget exhaustion now
+returns **HTTP 422**, code `speech_generation_limit`, with `param=input`. No partial
+audio is returned, the failed request is not retried, and its remaining segments
+are not generated. The resident worker stays ready for queued/later requests.
+This request-specific 4xx also avoids advertising an ordinary length limit as a
+backend outage; proxy-specific retry policies can still override default behavior.
+
+Worker reuse requires a matching kind-2 completion frame with `status=ok`, a
+strict boolean `eos=false`, `eos_frame=-1`, the requested `max_new_tokens`, exactly
+that many frames, and the matching received audio sample count. Merely missing
+EOS is not sufficient. Unknown/inconsistent completions, native error frames,
+EOF, timeouts, and cancellations still discard the worker. The native resident
+loop finalizes the decoder before sending completion and resets per-request
+talker, sampling, final-head, and decoder state on the next request. Native kernels,
+the 512-frame limit, and character segmentation are unchanged by this fix.
+
 The 4096-character HTTP input limit and 180-second native segment deadline are
 unchanged. Longer segments may increase time to first playback, especially with
 buffered MP3. Validate narration on the host as described in
@@ -169,7 +185,12 @@ ffplay -nodisp -autoexit -f s16le -ar 24000 -ac 1 -
 Input validation errors use OpenAI-shaped JSON. The adapter checks for real audio
 before returning streaming headers. An error after headers aborts the stream; it
 cannot retroactively replace HTTP 200 with JSON. A disconnected/interrupted
-generation terminates only the owned native worker and sets readiness false,
+request still discards the worker unless a reusable terminal completion was
+already validated. A late, validated length limit aborts the PCM response without
+a normal end-of-body marker but keeps the native worker ready. Authentication
+uses direct ASGI middleware to preserve that failure boundary, rather than a
+response-wrapping middleware that can finish the body before raising the error.
+A genuinely interrupted generation terminates only the owned native worker and sets readiness false,
 preventing reuse of partially updated state. The supervisor waits for cleanup,
 then replaces that worker with bounded backoff. Queued requests recheck readiness.
 Requests are never automatically replayed. See [recovery behavior](DEPLOYMENT.md#recovery-behavior).
