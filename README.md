@@ -6,6 +6,12 @@ The project targets concrete 24GB desktop GPUs and builds the execution path aro
 
 The stable runtime contract is documented in [`CONTRACT.md`](./CONTRACT.md).
 
+For the isolated RX 7900 XT / 1.7B Base voice-library workflow, see
+[`docs/BASE-VOICE-LIBRARY.md`](./docs/BASE-VOICE-LIBRARY.md). It enrolls private,
+reusable speaker embeddings and generates listening samples without changing
+the existing CustomVoice API or production service. Production cutover is a
+separate step; running two TTS checkpoints together is not required.
+
 ---
 
 ## At a Glance
@@ -316,7 +322,8 @@ Stable runtime coverage:
 Additional constraints:
 
 - text mode: `streaming`
-- Base requires `--ref-audio`
+- Base requires `--ref-audio`; AMD 1.7B Once also supports the saved-embedding
+  workflow in [BASE-VOICE-LIBRARY.md](./docs/BASE-VOICE-LIBRARY.md)
 - CustomVoice requires `--speaker`
 - VoiceDesign requires `--instruct`
 - use an explicit language for the stable Resident contract

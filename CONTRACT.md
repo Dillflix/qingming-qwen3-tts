@@ -73,6 +73,27 @@ Base:
 --ref-audio <wav>
 ```
 
+The AMD 1.7B **Once** path additionally supports offline reusable voice profiles:
+
+```text
+--task base-xvector
+--ref-audio <24-kHz-wav> --save-speaker-embedding-bf16 <new-file>
+```
+
+To synthesize using the exported profile, supply `--speaker-embedding-bf16 <file>`
+instead of `--ref-audio`. Exactly one input source is required. Export requires a
+reference WAV and creates a new file exclusively; an existing destination is an
+error. The destination's parent directory must exist. Import and export validate
+exactly 2048 little-endian BF16 values (4096 bytes), all finite and not all zero.
+Embedding paths must differ from the output WAV path, and embedding import/export
+cannot be combined with `--correctness-dir`.
+
+This extension requires a 1.7B Base checkpoint and is not available in Resident
+requests or the CustomVoice HTTP/JSONL API. The raw embedding contains no model
+identity; the [offline voice library workflow](docs/BASE-VOICE-LIBRARY.md) stores
+and verifies checkpoint hashes and reference provenance before reuse. Base does
+not accept `--speaker` or `--instruct`.
+
 CustomVoice:
 
 ```text

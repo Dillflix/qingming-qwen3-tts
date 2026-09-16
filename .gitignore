@@ -9,6 +9,11 @@ models/
 benchmark-*/
 benchmark-*.json
 benchmark-*.txt
+benchmark-*.tar.gz
+benchmark-*.tar.gz.sha256
+
+# Private voice references / embeddings (never publish enrolled voices)
+voice-library/
 
 # Generated audio
 *.wav
@@ -22,6 +27,7 @@ benchmark-*.txt
 __pycache__/
 *.pyc
 .venv/
+.venv-clone/
 venv/
 
 # Editor / OS

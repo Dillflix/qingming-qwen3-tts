@@ -50,6 +50,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "../../native/speaker_embedding.h"
 
 #include <cstdlib>
 #include <sstream>
@@ -3056,6 +3057,7 @@ struct CliOptions {
     fs::path ref_audio;
     fs::path correctness_dir;
     fs::path speaker_embedding_bf16;
+    fs::path save_speaker_embedding_bf16;
     std::string language = "English";
     std::string text;
     std::string task;
@@ -3411,6 +3413,9 @@ static CliOptions parse_cli(
         } else if (arg == "--speaker-embedding-bf16") {
             options.speaker_embedding_bf16 =
                 fs::path(require_value("--speaker-embedding-bf16"));
+        } else if (arg == "--save-speaker-embedding-bf16") {
+            options.save_speaker_embedding_bf16 =
+                fs::path(require_value("--save-speaker-embedding-bf16"));
         } else if (arg == "--language") {
             options.language = require_value("--language");
         } else if (arg == "--task") {
@@ -3476,7 +3481,8 @@ static CliOptions parse_cli(
                 << " --language English"
                 << " (--text TEXT | --text-file FILE)"
                 << " --output out.wav"
-                << " [--ref-audio ref.wav]"
+                << " [--ref-audio ref.wav | --speaker-embedding-bf16 profile.bf16]"
+                << " [--save-speaker-embedding-bf16 new-profile.bf16]"
                 << " [--speaker Ryan]"
                 << " [--instruct TEXT]"
                 << " --max-new-tokens N"
@@ -3528,10 +3534,9 @@ static CliOptions parse_cli(
             }
 
             if(options.task=="base-xvector"){
-                if(options.ref_audio.empty()){
-                    throw std::runtime_error(
-                        "--ref-audio is required for base-xvector");
-                }
+                qingming::speaker_embedding::validate_sources(
+                    options.ref_audio,options.speaker_embedding_bf16,
+                    options.save_speaker_embedding_bf16);
                 if(!options.speaker.empty()||!options.instruct.empty()){
                     throw std::runtime_error(
                         "base-xvector does not accept --speaker or --instruct");
@@ -3541,18 +3546,20 @@ static CliOptions parse_cli(
                     throw std::runtime_error(
                         "--speaker is required for custom-voice");
                 }
-                if(!options.ref_audio.empty()||!options.speaker_embedding_bf16.empty()){
+                if(!options.ref_audio.empty()||!options.speaker_embedding_bf16.empty()
+                   ||!options.save_speaker_embedding_bf16.empty()){
                     throw std::runtime_error(
-                        "custom-voice does not accept --ref-audio or --speaker-embedding-bf16");
+                        "custom-voice does not accept reference audio or speaker embedding files");
                 }
             }else{
                 if(options.instruct.empty()){
                     throw std::runtime_error(
                         "--instruct is required for voice-design");
                 }
-                if(!options.ref_audio.empty()||!options.speaker.empty()||!options.speaker_embedding_bf16.empty()){
+                if(!options.ref_audio.empty()||!options.speaker.empty()||!options.speaker_embedding_bf16.empty()
+                   ||!options.save_speaker_embedding_bf16.empty()){
                     throw std::runtime_error(
-                        "voice-design does not accept --ref-audio, --speaker, or --speaker-embedding-bf16");
+                        "voice-design does not accept reference audio, speaker, or speaker embedding files");
                 }
             }
         }
@@ -23160,14 +23167,12 @@ static int run_official_streaming_task(
     std::string effective_language=options.language;
 
     if(base){
-        if(options.ref_audio.empty()){
-            throw std::runtime_error(
-                "base-xvector requires --ref-audio");
-        }
-        ref_audio=fs::absolute(options.ref_audio);
-        if(!fs::is_regular_file(ref_audio)){
-            throw std::runtime_error(
-                "reference WAV does not exist: "+ref_audio.string());
+        if(!options.ref_audio.empty()){
+            ref_audio=fs::absolute(options.ref_audio);
+            if(!fs::is_regular_file(ref_audio)){
+                throw std::runtime_error(
+                    "reference WAV does not exist: "+ref_audio.string());
+            }
         }
     }else if(custom){
         custom_contract=load_custom_voice_contract(model_dir);
@@ -23227,7 +23232,7 @@ static int run_official_streaming_task(
         <<"instruct_token_count: "<<instruct_ids.size()<<"\n"
         <<"max_new_tokens_requested: "<<options.max_new_tokens<<"\n"
         <<"max_new_tokens_capacity: "<<generation_capacity<<"\n"
-        <<"reference_audio_dependency: "<<(base?"True":"False")<<"\n"
+        <<"reference_audio_dependency: "<<(!ref_audio.empty()?"True":"False")<<"\n"
         <<"runtime_python_dependency: False\n"
         <<"runtime_huggingface_dependency: False\n"
         <<"runtime_external_code_objects: False\n";
@@ -23308,18 +23313,19 @@ static int run_official_streaming_task(
     if(base){
         if(!options.speaker_embedding_bf16.empty()){
             speaker_embedding=
-                read_binary<std::uint16_t>(
+                qingming::speaker_embedding::read(
                     fs::absolute(options.speaker_embedding_bf16));
-            if(speaker_embedding.size()!=model_frontend::kHidden){
-                throw std::runtime_error(
-                    "--speaker-embedding-bf16 must match Talker hidden size");
-            }
             std::cout<<"speaker_embedding_source: external_bf16\n";
         }else{
             speaker_encoder::Encoder speaker_encoder(model_dir);
             speaker_embedding=
                 speaker_encoder.run(ref_audio,correctness_dir);
             std::cout<<"speaker_embedding_source: reference_audio_encoder\n";
+        }
+        qingming::speaker_embedding::validate(speaker_embedding);
+        if(!options.save_speaker_embedding_bf16.empty()){
+            qingming::speaker_embedding::write_exclusive(
+                fs::absolute(options.save_speaker_embedding_bf16),speaker_embedding);
         }
     }else if(custom){
         const auto conditioning=
@@ -25616,6 +25622,18 @@ static int run_main(
 
     const bool official_route=
         options.mode=="official-base-xvector";
+
+    if(!options.save_speaker_embedding_bf16.empty() && !official_route)
+        throw std::runtime_error("speaker embedding export requires the official Base task");
+    if(official_route && options.task=="base-xvector"){
+        (void)load_1_7b_config(fs::absolute(options.model_dir),"base");
+        qingming::speaker_embedding::validate_audio_output(
+            options.speaker_embedding_bf16,options.save_speaker_embedding_bf16,
+            options.output_wav);
+        if(!options.correctness_dir.empty()
+           &&(!options.speaker_embedding_bf16.empty()||!options.save_speaker_embedding_bf16.empty()))
+            throw std::runtime_error("speaker embedding import/export cannot be combined with --correctness-dir");
+    }
 
     const auto model_async_start=
         PerfClock::now();

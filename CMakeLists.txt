@@ -45,6 +45,7 @@ if(QINGMING_DEVICE STREQUAL "rx7900xtx-24g")
                 "${CMAKE_SOURCE_DIR}/main.cpp" -o "${PROD_BINARY}"
         DEPENDS "${CMAKE_SOURCE_DIR}/main.cpp" "${CMAKE_SOURCE_DIR}/devices/rx7900xtx-24g/device.h" "${FAMILY_SOURCE}"
                 "${CMAKE_SOURCE_DIR}/native/audio_protocol.h" "${CMAKE_SOURCE_DIR}/native/customvoice_resident.h"
+                "${CMAKE_SOURCE_DIR}/native/speaker_embedding.h"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}" VERBATIM)
 
     add_custom_command(OUTPUT "${BENCH_BINARY}"
