@@ -9,8 +9,9 @@ The stable runtime contract is documented in [`CONTRACT.md`](./CONTRACT.md).
 For the isolated RX 7900 XT / 1.7B Base voice-library workflow, see
 [`docs/BASE-VOICE-LIBRARY.md`](./docs/BASE-VOICE-LIBRARY.md). It enrolls private,
 reusable speaker embeddings and generates listening samples without changing
-the existing CustomVoice API or production service. Production cutover is a
-separate step; running two TTS checkpoints together is not required.
+the active production service. The separately gated [Base production cutover](./docs/BASE-PRODUCTION.md)
+replaces CustomVoice with one resident Base worker; running both checkpoints
+together is not required.
 
 ---
 

@@ -28,6 +28,7 @@ PREFIX = r'''
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include "native/speaker_embedding.h"
 namespace fs=std::filesystem;
 constexpr int hipSuccess=0;
 struct hipDeviceProp_t { const char* name="stub 7900 XT"; const char* gcnArchName="gfx1100"; int multiProcessorCount=42; };
@@ -47,14 +48,16 @@ namespace codec_decoder {using AudioChunkCallback=std::function<void(const float
 struct ResidentRequest {
     std::string text,language,speaker,instruct;
     fs::path output_wav;
+    std::vector<std::uint16_t> speaker_embedding;
     std::uint64_t seed=0;
     std::size_t max_new_tokens=0;
 };
 struct ResidentEngine {
     int calls=0;
     std::string last_text;
+    std::vector<std::uint16_t> last_embedding;
     void generate(const ResidentRequest& r,std::size_t,codec_decoder::AudioChunkCallback callback){
-        ++calls; last_text=r.text;
+        ++calls; last_text=r.text; last_embedding=r.speaker_embedding;
         const float wave[]={0.25f,-0.25f};
         if(callback) callback(wave,2);
         std::cout<<"resident_codec_frame_count: 1\nresident_e2e_ms: 10\nresident_request_success: True\n";
@@ -231,6 +234,41 @@ int main(){
         import json
         events = [json.loads(line) for line in output.splitlines()]
         self.assertEqual([event["event"] for event in events], ["ready", "completed", "ready", "error"])
+
+    def test_actual_base_ipc_switches_vectors_and_rejects_paths_and_style(self):
+        backend = (ROOT / "devices/rx7900xtx-24g/qwen3_tts_1_7b.cpp").read_text(encoding="utf-8")
+        parser = backend[backend.index("struct J {"):backend.index("static std::uint64_t le64(")]
+        main = (ROOT / "main.cpp").read_text(encoding="utf-8")
+        helpers = main[main.index("struct CapturedIo {"):main.index("static int run_once(")]
+        source = PREFIX + parser + "\n}}\nnamespace qingming::production {\n" + helpers
+        source += '\n#include "native/customvoice_resident.h"\n}\n' + r'''
+int main(){
+    using namespace qingming::production;
+    qwen3_tts::baseline::ResidentEngine engine;
+    qingming::audio_protocol::Writer audio;
+    std::string a,b;
+    for(int i=0;i<2048;++i){a+="803e";b+="80be";}
+    auto request=[](const std::string& hex,const std::string& extra=""){
+        return std::string(R"({"request_id":1,"text":"hello","language":"English","output":"sample.wav","seed":1234,"max_new_tokens":512,"stream_audio":true,"speaker_embedding_hex":")")+hex+"\""+extra+"}\n";
+    };
+    auto run=[&](const std::string& text){
+        std::istringstream in(text);
+        auto* old=std::cin.rdbuf(in.rdbuf());
+        auto code=run_customvoice_jsonl(engine,audio,512,"none","base-xvector");
+        std::cin.rdbuf(old); std::cin.clear(); return code;
+    };
+    assert(run(request(a)+request(b)+request(a))==0);
+    assert(engine.calls==3 && engine.last_embedding.size()==2048 && engine.last_embedding[0]==0x3e80);
+    assert(run(request(a,R"(,"ref_audio":"private.wav")"))==1);
+    assert(run(request(a,R"(,"speaker":"Aiden")"))==1);
+    assert(run(request(a,R"(,"instruct":"calm")"))==1);
+    assert(run(request("bad"))==1);
+    a.replace(0,4,"807f");
+    assert(run(request(a))==1);
+    assert(engine.calls==3);
+}
+'''
+        self.compile_and_run(source)
 
     def test_actual_once_cli_accepts_offline_base_profiles_only(self):
         backend = (ROOT / "devices/rx7900xtx-24g/qwen3_tts_1_7b.cpp").read_text(encoding="utf-8")

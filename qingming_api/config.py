@@ -19,7 +19,10 @@ def read_key(path):
 def parse_args(argv=None, environ=None):
     env = os.environ if environ is None else environ
     root = Path(__file__).resolve().parents[1]
-    parser = argparse.ArgumentParser(description="CustomVoice-only API; one supervised gfx1100 worker")
+    parser = argparse.ArgumentParser(description="Speech API; one supervised gfx1100 worker")
+    parser.add_argument("--task", choices=("custom-voice", "base-xvector"), default=env.get("QINGMING_TASK", "custom-voice"))
+    parser.add_argument("--voice-library", type=Path, default=env.get("QINGMING_VOICE_LIBRARY"))
+    parser.add_argument("--voice-registry", type=Path, default=env.get("QINGMING_VOICE_REGISTRY"))
     parser.add_argument("--binary", type=Path, default=env.get("QINGMING_BINARY", str(root / "build/rx7900xtx-24g-1.7b/qingming-qwen3-tts_rx7900xtx-24g_1.7b")))
     parser.add_argument("--model-dir", type=Path, default=env.get("QINGMING_MODEL_DIR", str(root / "models/Qwen3-TTS-12Hz-1.7B-CustomVoice")))
     parser.add_argument("--host", default=env.get("QINGMING_HOST", "127.0.0.1"))
@@ -30,6 +33,12 @@ def parse_args(argv=None, environ=None):
     parser.add_argument("--voice-aliases", type=Path, default=env.get("QINGMING_VOICE_ALIASES"))
     parser.add_argument("--ffmpeg", default=env.get("QINGMING_FFMPEG", "ffmpeg"))
     args = parser.parse_args(argv)
+    if args.task not in ("custom-voice", "base-xvector"):
+        parser.error("Invalid task")
+    if args.task == "base-xvector" and (args.voice_library is None or args.voice_registry is None or args.voice_aliases):
+        parser.error("Base requires --voice-library and --voice-registry; legacy --voice-aliases is not supported")
+    if args.task == "custom-voice" and (args.voice_library or args.voice_registry):
+        parser.error("Voice profiles require --task base-xvector")
     if not 1 <= args.port <= 65535 or (args.hip_device is not None and args.hip_device < 0):
         parser.error("Port must be 1..65535 and HIP device index must be nonnegative")
     if not args.host or any(c.isspace() or ord(c) < 32 for c in args.host):

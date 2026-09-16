@@ -38,7 +38,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--base-url", default="http://127.0.0.1:8880/v1")
     parser.add_argument("--model", default="tts-1")
-    parser.add_argument("--voice", default="echo", help="echo is the Ryan alias supported by standard voice selectors")
+    parser.add_argument("--voice", default="echo", help="Registered/preset voice; echo maps to Ryan on CustomVoice or the registry default on Base")
     parser.add_argument("--fixture", choices=FIXTURES, default="smoke",
                         help="narration exercises longer segments; listen for completeness and steady delivery")
     parser.add_argument("--api-key-env", default="QINGMING_TEST_API_KEY")
@@ -65,7 +65,7 @@ def main():
               "scope": "MP3 transport/decoding only; listen for complete text, pace and tone"}
     try:
         started = time.monotonic()
-        with urllib.request.build_opener(NoRedirect).open(request, timeout=120) as response:
+        with urllib.request.build_opener(NoRedirect, urllib.request.ProxyHandler({})).open(request, timeout=120) as response:
             audio = response.read(8 * 1024 * 1024 + 1)
         elapsed = time.monotonic() - started
         if not 100 < len(audio) <= 8 * 1024 * 1024:

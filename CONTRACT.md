@@ -88,11 +88,19 @@ exactly 2048 little-endian BF16 values (4096 bytes), all finite and not all zero
 Embedding paths must differ from the output WAV path, and embedding import/export
 cannot be combined with `--correctness-dir`.
 
-This extension requires a 1.7B Base checkpoint and is not available in Resident
-requests or the CustomVoice HTTP/JSONL API. The raw embedding contains no model
+This export/import CLI extension requires a 1.7B Base checkpoint. The raw embedding contains no model
 identity; the [offline voice library workflow](docs/BASE-VOICE-LIBRARY.md) stores
 and verifies checkpoint hashes and reference provenance before reuse. Base does
 not accept `--speaker` or `--instruct`.
+
+The AMD 1.7B JSONL resident protocol additionally supports `--task base-xvector`.
+Its conditioning field is `speaker_embedding_hex`: exactly 8192 lowercase hex
+characters encoding 4096 little-endian BF16 bytes. It rejects reference paths,
+speaker-table names, and style instructions. The public HTTP API accepts only
+registered voice names, not this internal payload. The registry verifies model
+and profile hashes and snapshots embeddings before starting one Base worker.
+See [Base production deployment](docs/BASE-PRODUCTION.md). CustomVoice remains
+available as a separately selected task for rollback, not as a second resident model.
 
 CustomVoice:
 

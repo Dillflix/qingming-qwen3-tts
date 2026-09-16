@@ -24,7 +24,13 @@ class GenerationLimitError(RuntimeError):
 
 class NativeWorker:
     def __init__(self, binary, model_dir, *, hip_device=None, max_new_tokens=512,
-                 startup_timeout=300, request_timeout=180):
+                 startup_timeout=300, request_timeout=180, task="custom-voice", voice_embeddings=None):
+        if task not in ("custom-voice", "base-xvector"):
+            raise ValueError("Unsupported native task")
+        if task == "base-xvector" and not voice_embeddings:
+            raise ValueError("Base requires registered voice embeddings")
+        self.task = task
+        self.voice_embeddings = dict(voice_embeddings or {})
         self.binary = Path(binary).resolve()
         self.model_dir = Path(model_dir).resolve()
         self.hip_device = hip_device
@@ -55,7 +61,7 @@ class NativeWorker:
         if self.hip_device is not None:
             env["HIP_VISIBLE_DEVICES"] = str(self.hip_device)
         args = [str(self.binary), "--lifecycle", "resident", "--model-dir", str(self.model_dir),
-                "--task", "custom-voice", "--text-mode", "streaming", "--max-new-tokens", str(self.max_new_tokens),
+                "--task", self.task, "--text-mode", "streaming", "--max-new-tokens", str(self.max_new_tokens),
                 "--resident-cu-partition", "none", "--protocol", "jsonl-v1", "--audio-fd", str(write_fd)]
         pipe = os.fdopen(read_fd, "rb", buffering=0)
         try:
@@ -69,14 +75,14 @@ class NativeWorker:
             self.tasks.append(asyncio.create_task(self._drain(self.process.stderr, "stderr")))
             line = await asyncio.wait_for(self.process.stdout.readline(), self.startup_timeout)
             self.info = json.loads(line)
-            expected = {"event": "ready", "protocol": "jsonl-v1", "task": "custom-voice", "family": "1.7b",
+            expected = {"event": "ready", "protocol": "jsonl-v1", "task": self.task, "family": "1.7b",
                         "sample_rate": 24000, "channels": 1, "sample_format": "f32le", "cu_partition": "none"}
             if any(self.info.get(k) != v for k, v in expected.items()):
-                raise RuntimeError(f"Native startup did not report the required CustomVoice protocol: {self.info}")
+                raise RuntimeError(f"Native startup did not report the required {self.task} protocol: {self.info}")
             self.ready = True
             self.tasks.append(asyncio.create_task(self._drain(self.process.stdout, "stdout")))
             self.tasks.append(asyncio.create_task(self._watch(self.process)))
-            LOG.info("CustomVoice worker ready: %s", self.info)
+            LOG.info("Speech worker ready: %s", self.info)
         except BaseException:
             await self.close()
             raise
@@ -102,6 +108,8 @@ class NativeWorker:
 
     async def generate(self, text, speaker, language, instruct, *, seed=1234, retain_dir=None):
         """Caller holds the single-worker lock through the whole HTTP response."""
+        if self.task == "base-xvector" and (speaker not in self.voice_embeddings or instruct):
+            raise ValueError("Base requires a registered voice and no style instruction")
         if not self.ready or self.process.returncode is not None:
             raise RuntimeError(self.error or "Native worker is not ready")
         self.counter += 1
@@ -119,6 +127,9 @@ class NativeWorker:
             body = {"request_id": request_id, "text": text, "speaker": speaker, "language": language,
                     "instruct": instruct, "seed": seed, "max_new_tokens": self.max_new_tokens,
                     "output": str(directory / f"{request_id}.wav"), "stream_audio": True}
+            if self.task == "base-xvector":
+                del body["speaker"], body["instruct"]
+                body["speaker_embedding_hex"] = self.voice_embeddings[speaker]
             # The resident parser accepts literal UTF-8; never turn it into \u escapes.
             data = (json.dumps(body, ensure_ascii=False) + "\n").encode("utf-8")
             if len(data) > 65536:

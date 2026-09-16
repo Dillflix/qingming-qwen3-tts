@@ -25810,6 +25810,7 @@ struct ResidentRequest {
     std::string speaker;
     std::string instruct;
     fs::path ref_audio;
+    std::vector<std::uint16_t> speaker_embedding;
     fs::path output_wav;
     std::uint64_t seed=1234;
     std::size_t max_new_tokens=0;
@@ -26248,6 +26249,7 @@ public:
         }
 
         const auto load_start=PerfClock::now();
+        if(task_=="base-xvector") (void)load_1_7b_config(model_dir_,"base");
 
         configure_sampling(true,1234);
         sampling_state_=std::make_unique<GpuSamplingState>(1234);
@@ -26257,8 +26259,8 @@ public:
         tokenizer_=std::make_unique<ZImageTokenizer>(tokenizer_dir,false);
 
         if(task_=="base-xvector"){
-            speaker_encoder_=
-                std::make_unique<speaker_encoder::Encoder>(model_dir_);
+            // Registered profiles need no reference encoder. Legacy WAV requests
+            // initialize it lazily on first use.
         }else if(task_=="custom-voice"){
             custom_contract_=load_custom_voice_contract(model_dir_);
         }else{
@@ -26354,10 +26356,11 @@ public:
         const bool design=task_=="voice-design";
 
         if(base){
-            if(request.ref_audio.empty()){
+            if(request.ref_audio.empty()==request.speaker_embedding.empty()){
                 throw std::runtime_error(
-                    "base-xvector resident request requires ref_audio");
+                    "base-xvector resident request requires exactly one reference or embedding");
             }
+            if(!request.speaker_embedding.empty()) qingming::speaker_embedding::validate(request.speaker_embedding);
             if(!request.speaker.empty()||!request.instruct.empty()){
                 throw std::runtime_error(
                     "base-xvector resident request does not accept speaker or instruct");
@@ -26367,7 +26370,7 @@ public:
                 throw std::runtime_error(
                     "custom-voice resident request requires speaker");
             }
-            if(!request.ref_audio.empty()){
+            if(!request.ref_audio.empty()||!request.speaker_embedding.empty()){
                 throw std::runtime_error(
                     "custom-voice resident request does not accept ref_audio");
             }
@@ -26376,7 +26379,7 @@ public:
                 throw std::runtime_error(
                     "voice-design resident request requires instruct");
             }
-            if(!request.ref_audio.empty()||!request.speaker.empty()){
+            if(!request.ref_audio.empty()||!request.speaker.empty()||!request.speaker_embedding.empty()){
                 throw std::runtime_error(
                     "voice-design resident request does not accept ref_audio or speaker");
             }
@@ -26411,15 +26414,16 @@ public:
 
         const auto speaker_start=PerfClock::now();
         if(base){
-            const fs::path ref_audio=fs::absolute(request.ref_audio);
-            if(!fs::is_regular_file(ref_audio)){
-                throw std::runtime_error(
-                    "resident reference WAV does not exist: "+ref_audio.string());
+            if(!request.speaker_embedding.empty()) {
+                speaker_embedding=request.speaker_embedding;
+            } else {
+                const fs::path ref_audio=fs::absolute(request.ref_audio);
+                if(!fs::is_regular_file(ref_audio)){
+                    throw std::runtime_error("resident reference WAV does not exist: "+ref_audio.string());
+                }
+                if(!speaker_encoder_) speaker_encoder_=std::make_unique<speaker_encoder::Encoder>(model_dir_);
+                speaker_embedding=speaker_encoder_->run(ref_audio,fs::path{});
             }
-            speaker_embedding=
-                speaker_encoder_->run(
-                    ref_audio,
-                    fs::path{});
         }else if(custom){
             if(!custom_contract_){
                 throw std::runtime_error(

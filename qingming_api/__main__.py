@@ -7,6 +7,7 @@ import uvicorn
 from .app import create_app
 from .config import parse_args
 from .worker import NativeWorker
+from .base_voices import BaseVoiceCatalog
 
 
 def main():
@@ -19,8 +20,10 @@ def main():
     if aliases is not None and not isinstance(aliases, dict):
         raise SystemExit("--voice-aliases must contain a JSON object")
     logging.basicConfig(level=logging.INFO)
-    worker = NativeWorker(args.binary, args.model_dir, hip_device=args.hip_device)
-    app = create_app(args.model_dir, worker, aliases=aliases, api_key=args.api_key, ffmpeg=args.ffmpeg)
+    catalog = BaseVoiceCatalog(args.model_dir, args.voice_library, args.voice_registry) if args.task == "base-xvector" else None
+    worker = NativeWorker(args.binary, args.model_dir, hip_device=args.hip_device, task=args.task,
+                          voice_embeddings=catalog.embeddings if catalog else None)
+    app = create_app(args.model_dir, worker, aliases=aliases, api_key=args.api_key, ffmpeg=args.ffmpeg, catalog=catalog)
     uvicorn.run(app, host=args.host, port=args.port, workers=1, limit_concurrency=32, timeout_keep_alive=5)
 
 

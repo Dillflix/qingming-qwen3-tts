@@ -96,6 +96,24 @@ inline std::vector<std::uint16_t> read(const std::filesystem::path& path) {
     return values;
 }
 
+// JSONL carries the registered payload, never a caller-controlled file path.
+inline std::vector<std::uint16_t> from_hex(const std::string& hex) {
+    if(hex.size()!=byte_count*2) throw std::runtime_error("invalid speaker embedding hex length");
+    auto digit=[](char c)->unsigned {
+        if(c>='0'&&c<='9') return c-'0';
+        if(c>='a'&&c<='f') return c-'a'+10;
+        throw std::runtime_error("invalid speaker embedding hex digit");
+    };
+    std::vector<std::uint16_t> values(dimensions);
+    for(std::size_t i=0;i<dimensions;++i) {
+        const auto low=(digit(hex[4*i])<<4)|digit(hex[4*i+1]);
+        const auto high=(digit(hex[4*i+2])<<4)|digit(hex[4*i+3]);
+        values[i]=static_cast<std::uint16_t>(low|(high<<8));
+    }
+    validate(values);
+    return values;
+}
+
 inline void write_exclusive(
     const std::filesystem::path& path,
     const std::vector<std::uint16_t>& values) {

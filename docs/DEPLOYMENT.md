@@ -1,5 +1,9 @@
 # Supervised TTS service, LiteLLM Proxy and Open WebUI
 
+For replacement with one Base worker and enrolled voices, see
+[BASE-PRODUCTION.md](BASE-PRODUCTION.md). This page describes the original
+CustomVoice installation retained as the rollback path.
+
 The intended route is **Open WebUI → LiteLLM `/v1/audio/speech` → Qingming**.
 The existing chat/LLM route does not change. This is CustomVoice on the RX 7900 XT;
 the iGPU LLM service is not stopped, rebuilt, or reconfigured by these scripts.

@@ -107,7 +107,7 @@ def normalize_reference(args, destination, log):
     return validate_reference(destination)
 
 
-def load_profile(directory, model_dir):
+def load_profile(directory, model_dir, *, model_fingerprint=None):
     directory = Path(directory).resolve(strict=True)
     profile = json.loads((directory / "profile.json").read_text(encoding="utf-8"))
     if (profile.get("schema") != SCHEMA or profile.get("status") != "ENROLLED"
@@ -120,7 +120,7 @@ def load_profile(directory, model_dir):
             raise ValueError(f"Voice profile integrity check failed: {name}")
     validate_reference(directory / "reference.wav")
     check_embedding(directory / "speaker.bf16")
-    if profile.get("model_files_sha256") != fingerprint_model(model_dir):
+    if profile.get("model_files_sha256") != (fingerprint_model(model_dir) if model_fingerprint is None else model_fingerprint):
         raise ValueError("Base checkpoint fingerprint changed; re-enroll/revalidate rather than silently reusing this voice")
     return profile
 

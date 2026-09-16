@@ -177,12 +177,10 @@ a restrictive umask on Linux. The default library/results are gitignored.
 audio, not the reference or embedding. Do not publish it or upload a voice library
 to GitHub. Use a non-sensitive test passage if sending diagnostic results.
 
-## Later production cutover (not implemented by this workflow)
+## Production cutover (separate from enrollment)
 
-After listening approval, extend the resident Base worker to load these
-registered embeddings by voice ID, then test voice switching, natural EOS,
-streaming, generation-limit recovery, and LiteLLM/Open WebUI read-aloud. Deploy
-one Base checkpoint in place of CustomVoice only after those tests pass, keeping
-the old service configuration available for rollback. The present HTTP API still
-rejects cloning voices; adding a profile does not expose it publicly or switch
-the current Aiden voice.
+After listening approval, follow [BASE-PRODUCTION.md](BASE-PRODUCTION.md) to
+register names and run the once/resident/streaming/recovery gate before replacing
+CustomVoice with one Base worker. Enrollment alone does not expose any voice
+publicly or switch the current Aiden voice. The original configuration and weights
+are retained on disk for rollback, not loaded alongside Base.

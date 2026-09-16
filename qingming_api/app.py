@@ -57,8 +57,11 @@ class OwnedStream(StreamingResponse):
 
 
 def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg", queue_timeout=30,
-               supervisor_options=None):
-    catalog = VoiceCatalog(Path(model_dir), aliases)
+               supervisor_options=None, catalog=None):
+    catalog = catalog if catalog is not None else VoiceCatalog(Path(model_dir), aliases)
+    task_name = getattr(catalog, "task", "custom-voice")
+    if getattr(worker, "task", "custom-voice") != task_name:
+        raise ValueError("Worker/catalog task mismatch")
     lock = asyncio.Lock()
     waiting = 0
 
@@ -73,7 +76,7 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    app = FastAPI(title="Qingming CustomVoice", lifespan=lifespan, docs_url=None, redoc_url=None)
+    app = FastAPI(title="Qingming Speech", lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.worker = worker
     app.state.supervisor = supervisor
 
@@ -89,7 +92,7 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
 
     @app.get("/readyz")
     async def ready():
-        return JSONResponse({"ready": worker.ready, "task": "custom-voice"}, status_code=200 if worker.ready else 503)
+        return JSONResponse({"ready": worker.ready, "task": task_name}, status_code=200 if worker.ready else 503)
 
     @app.get("/v1/models")
     async def models():
@@ -111,7 +114,9 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
                 raise APIError("Request body exceeds 64 KiB", code="request_too_large", status=413)
         try:
             body = json.loads(data)
-            if isinstance(body, dict) and isinstance(body.get("voice"), str) and body["voice"].casefold().startswith("clone:"):
+            if task_name == "base-xvector" and isinstance(body, dict) and "voice" not in body:
+                body["voice"] = catalog.default
+            if task_name == "custom-voice" and isinstance(body, dict) and isinstance(body.get("voice"), str) and body["voice"].casefold().startswith("clone:"):
                 raise APIError(CLONE_ERROR, "voice", "voice_cloning_not_supported")
             value = SpeechRequest.model_validate(body)
         except (ValueError, UnicodeError) as error:
@@ -121,7 +126,7 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
             raise APIError("Invalid speech request", param, "invalid_request") from error
         speaker, language, instruct = catalog.resolve(value)
         if not worker.ready:
-            raise APIError("CustomVoice worker is not ready; inspect the service log", code="engine_not_ready", status=503)
+            raise APIError("Speech worker is not ready; inspect the service log", code="engine_not_ready", status=503)
         if waiting >= 8:
             raise APIError("The speech queue is full", code="queue_full", status=429)
         waiting += 1
@@ -135,7 +140,7 @@ def create_app(model_dir, worker, *, aliases=None, api_key=None, ffmpeg="ffmpeg"
         # A queued request may have arrived before its predecessor killed the worker.
         if not worker.ready:
             lock.release()
-            raise APIError("CustomVoice worker is recovering", code="engine_not_ready", status=503)
+            raise APIError("Speech worker is recovering", code="engine_not_ready", status=503)
         released = False
         cleanup_task = None
 

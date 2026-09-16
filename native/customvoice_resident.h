@@ -1,10 +1,13 @@
 // Included inside qingming::production after the legacy result formatters.
-// jsonl-v1 is deliberately CustomVoice-only; legacy CLI protocols are unchanged.
+// jsonl-v1 supports CustomVoice or validated Base embedding payloads.
 static int run_customvoice_jsonl(
     qwen3_tts::baseline::ResidentEngine& engine,
     qingming::audio_protocol::Writer& audio,
     std::size_t capacity,
-    const std::string& partition) {
+    const std::string& partition,
+    const std::string& task="custom-voice") {
+    const bool base=task=="base-xvector";
+    if(!base && task!="custom-voice") throw std::runtime_error("unsupported JSONL task");
     using J=qwen3_tts::baseline::model_frontend::J;
     using Kind=qingming::audio_protocol::Kind;
     int device=0;
@@ -12,7 +15,7 @@ static int run_customvoice_jsonl(
     if(hipGetDevice(&device)!=hipSuccess || hipGetDeviceProperties(&properties,device)!=hipSuccess)
         throw std::runtime_error("cannot identify resident HIP device");
     std::cout<<"{\"event\":\"ready\",\"protocol\":\"jsonl-v1\","
-        <<"\"task\":\"custom-voice\",\"family\":\"1.7b\","
+        <<"\"task\":\""<<task<<"\",\"family\":\"1.7b\","
         <<"\"sample_rate\":24000,\"channels\":1,\"sample_format\":\"f32le\","
         <<"\"max_new_tokens\":"<<capacity<<",\"cu_partition\":\""<<partition<<"\","
         <<"\"gpu_name\":\""<<json_escape(properties.name)<<"\","
@@ -38,9 +41,10 @@ static int run_customvoice_jsonl(
             id=integer("request_id",1,4294967295ULL);
             for(const auto& [key,unused]:value.o) {
                 (void)unused;
-                if(key!="request_id" && key!="text" && key!="language" && key!="speaker" &&
-                   key!="instruct" && key!="output" && key!="seed" && key!="max_new_tokens" && key!="stream_audio")
-                    throw std::runtime_error("unsupported CustomVoice request field: "+key);
+                const bool conditioning=base ? key=="speaker_embedding_hex" : (key=="speaker"||key=="instruct");
+                if(key!="request_id" && key!="text" && key!="language" && !conditioning &&
+                   key!="output" && key!="seed" && key!="max_new_tokens" && key!="stream_audio")
+                    throw std::runtime_error("unsupported speech request field: "+key);
             }
             auto string=[&](const char* key,bool required) {
                 const auto it=value.o.find(key);
@@ -53,8 +57,12 @@ static int run_customvoice_jsonl(
             qwen3_tts::baseline::ResidentRequest request;
             request.text=string("text",true);
             request.language=string("language",true);
-            request.speaker=string("speaker",true);
-            request.instruct=string("instruct",false);
+            if(base) {
+                request.speaker_embedding=qingming::speaker_embedding::from_hex(string("speaker_embedding_hex",true));
+            } else {
+                request.speaker=string("speaker",true);
+                request.instruct=string("instruct",false);
+            }
             request.output_wav=string("output",true);
             request.seed=integer("seed",0,4294967295ULL);
             request.max_new_tokens=integer("max_new_tokens",1,capacity);
@@ -74,7 +82,7 @@ static int run_customvoice_jsonl(
             {
                 CapturedIo io;
                 io.begin();
-                print_resident_result(captured,request,"custom-voice","streaming");
+                print_resident_result(captured,request,task,"streaming");
                 io.end();
                 result=io.out.str();
             }

@@ -735,7 +735,7 @@ static int run_resident(
         throw std::runtime_error("--audio-fd requires --protocol jsonl-v1");
     std::unique_ptr<qingming::audio_protocol::Writer> audio;
     if(protocol=="jsonl-v1"){
-        if(task!="custom-voice") throw std::runtime_error("jsonl-v1 supports CustomVoice only");
+        if(task!="custom-voice" && task!="base-xvector") throw std::runtime_error("jsonl-v1 supports CustomVoice or Base profiles only");
         int selected=0;
         hipDeviceProp_t properties{};
         if(hipGetDevice(&selected)!=hipSuccess || hipGetDeviceProperties(&properties,selected)!=hipSuccess ||
@@ -779,7 +779,7 @@ static int run_resident(
         capture.end();
     }
 
-    if(audio) return run_customvoice_jsonl(*engine,*audio,maximum_frames,cu_partition);
+    if(audio) return run_customvoice_jsonl(*engine,*audio,maximum_frames,cu_partition,task);
 
     std::cout
         <<"> "
