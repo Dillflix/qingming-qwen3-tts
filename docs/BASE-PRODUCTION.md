@@ -19,6 +19,7 @@ Run on `.242`. Use tmux (`tmux new -s base-production`) if desired.
 set -Eeuo pipefail
 cd /home/jdillman/qingming-qwen3-tts
 git pull --ff-only
+.venv/bin/python -m pip install -r requirements-base-production.txt
 cmake -S . -B build/base-production-1.7b \
   -DQINGMING_DEVICE=rx7900xtx-24g \
   -DQINGMING_MODEL_FAMILY=1.7b \

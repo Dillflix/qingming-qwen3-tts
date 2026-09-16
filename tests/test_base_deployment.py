@@ -57,6 +57,32 @@ class BaseDeploymentTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertFalse(self.invoke(install=True))  # Idempotent exact match.
 
+    def test_venv_interpreter_symlink_is_not_resolved(self):
+        python = self.root / '.venv/bin/python'
+        system_python = self.root / 'usr/bin/python3.14'
+        original_resolve = Path.resolve
+
+        # Simulate the Linux venv symlink on every test platform, including
+        # Windows hosts without permission to create filesystem symlinks.
+        def resolve(path, *args, **kwargs):
+            return system_python if path == python else original_resolve(path, *args, **kwargs)
+
+        with patch.object(Path, 'resolve', resolve):
+            self.invoke(install=True)
+        content = self.dropin.read_text()
+        expected = installer.quote(python.absolute()).replace('$', '$$')
+        self.assertIn(f'ExecStart={expected} -m qingming_api', content)
+        self.assertNotIn(str(system_python), content)
+
+    def test_dependency_preflight_precedes_service_stop(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / 'scripts/deploy_base_voices.sh').read_text()
+        self.assertLess(script.index('import uvicorn; from scripts import validate_base'),
+                        script.index('sudo systemctl stop'))
+        requirements = (root / 'requirements-base-production.txt').read_text()
+        self.assertIn('-r requirements-api.txt', requirements)
+        self.assertIn('httpx>=0.27,<1', requirements)
+
     def test_failed_systemd_validation_removes_only_new_dropin(self):
         with self.assertRaises(subprocess.CalledProcessError):
             self.invoke(install=True, failing=True)

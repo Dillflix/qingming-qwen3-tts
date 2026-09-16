@@ -20,13 +20,15 @@ DROPIN = Path("/etc/systemd/system/qingming-tts.service.d/50-base-voices.conf")
 def render(root, binary, model_dir, library, registry, hip_device):
     if hip_device < 0:
         raise ValueError("HIP device must be nonnegative")
-    def argument(value):
-        value = Path(value).resolve()
+    def argument(value, *, preserve_symlink=False):
+        # A venv interpreter is commonly a symlink to the system Python. Its
+        # invocation path selects pyvenv.cfg; resolving it loses the venv.
+        value = Path(value).absolute() if preserve_symlink else Path(value).resolve()
         return quote(value).replace("$", "$$")
     return ("[Unit]\nDescription=Qingming Base cloned-voice speech API (RX 7900 XT)\n\n[Service]\n"
             "UnsetEnvironment=QINGMING_VOICE_ALIASES QINGMING_VOICE_LIBRARY QINGMING_VOICE_REGISTRY\n"
             "ExecStart=\n"
-            f"ExecStart={argument(root / '.venv/bin/python')} -m qingming_api --api-key-file %d/api-key "
+            f"ExecStart={argument(root / '.venv/bin/python', preserve_symlink=True)} -m qingming_api --api-key-file %d/api-key "
             f"--task base-xvector --binary {argument(binary)} --model-dir {argument(model_dir)} "
             f"--voice-library {argument(library)} --voice-registry {argument(registry)} --hip-device {hip_device}\n")
 

@@ -8,6 +8,11 @@ BASE_DROPIN=/etc/systemd/system/qingming-tts.service.d/50-base-voices.conf
 test -x .venv/bin/python
 test -x build/base-production-1.7b/qingming-qwen3-tts_rx7900xtx-24g_1.7b
 test -f voice-library/production.json
+# Check both validator and service dependencies before any service interruption.
+.venv/bin/python -c 'import uvicorn; from scripts import validate_base, configure_base_service' || {
+    echo 'Install dependencies first: .venv/bin/python -m pip install -r requirements-base-production.txt' >&2
+    exit 1
+}
 sudo -v
 if sudo test -e "$BASE_DROPIN" || sudo test -L "$BASE_DROPIN"; then
     echo 'Base drop-in already exists; refusing an implicit redeployment.' >&2
@@ -44,7 +49,9 @@ sudo systemctl stop qingming-tts.service
 sudo .venv/bin/python scripts/configure_base_service.py --hip-device "$BASE_GPU" \
     --validation-report "$BASE_RESULTS/report.json" --install
 BASE_INSTALLED=1
+echo 'Starting Base TTS service...'
 sudo systemctl start qingming-tts.service
+echo 'Waiting up to 180 seconds for authenticated Base readiness; inspect journalctl -u qingming-tts.service if startup fails.'
 sudo .venv/bin/python scripts/check_base_ready.py
 # Runs as root only to read the existing credential file; it never prints the key.
 sudo .venv/bin/python scripts/check_speech.py --base-url http://127.0.0.1:8880/v1 \
